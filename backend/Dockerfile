@@ -11,7 +11,7 @@ WORKDIR /app
 COPY package*.json tsconfig.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm install
 
 # Copy source code and Lua scripts
 COPY src ./src
@@ -29,7 +29,7 @@ ENV PORT=3000
 
 # Copy built artifacts and production node_modules from builder
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/lua ./dist/lua

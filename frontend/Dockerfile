@@ -8,7 +8,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package*.json tsconfig.json vite.config.ts ./
-RUN npm ci
+RUN npm install
 
 COPY index.html ./
 COPY src ./src
