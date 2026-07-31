@@ -57,3 +57,26 @@ export async function closePool(): Promise<void> {
     _pool = null;
   }
 }
+
+/**
+ * Automatically apply database/schema.sql if tables do not exist yet.
+ */
+export async function autoInitializeSchema(): Promise<void> {
+  const pool = getPool();
+  try {
+    const res = await pool.query("SELECT to_regclass('public.users') as tbl");
+    if (!res.rows[0].tbl) {
+      logger.info('Database tables missing — automatically running schema.sql...');
+      const schemaPath = path.resolve(__dirname, '../../database/schema.sql');
+      if (fs.existsSync(schemaPath)) {
+        const sql = fs.readFileSync(schemaPath, 'utf-8');
+        await pool.query(sql);
+        logger.info('✅ Database schema.sql successfully applied to PostgreSQL!');
+      }
+    } else {
+      logger.info('Database schema verified — tables already exist.');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Auto schema initialization check failed');
+  }
+}

@@ -7,6 +7,7 @@ import { getPool, closePool } from './config/database';
 import { logger } from './config/logger';
 import { BiddingEngine } from './services/bidding-engine';
 import { AuctionSocketServer } from './websocket/auction-socket';
+import { Client } from 'pg'; // <-- ADDED THIS IMPORT
 
 // Routes
 import authRoutes from './routes/auth';
@@ -29,6 +30,27 @@ async function main(): Promise<void> {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
+
+  // --- ADDED TEMPORARY DB INIT ROUTE HERE ---
+  app.get('/init-db', async (req, res) => {
+      const client = new Client({
+          connectionString: "postgresql://faizal:CeTBtmLZ53zc8WAjiWVBUxvneuddYYsG@dpg-d9m3g4l6ub7c73ca14a0-a.oregon-postgres.render.com/bike_auction",
+          ssl: { rejectUnauthorized: false }
+      });
+
+      try {
+          await client.connect();
+          const response = await fetch("https://raw.githubusercontent.com/Faizzyyy13/bike-auction-platform/main/database/schema.sql");
+          const sql = await response.text();
+          await client.query(sql);
+          res.send("✅ SUCCESS! Database tables created from GitHub.");
+      } catch (error: any) {
+          res.status(500).send(`❌ Failed: ${error.message}`);
+      } finally {
+          await client.end();
+      }
+  });
+  // ------------------------------------------
 
   // Prometheus Metrics endpoint
   app.use('/metrics', metricsRoutes);
