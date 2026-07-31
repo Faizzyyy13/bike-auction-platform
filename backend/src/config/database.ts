@@ -1,5 +1,7 @@
 import { Pool, PoolClient } from 'pg';
 import { logger } from './logger';
+import fs from 'fs';
+import path from 'path';
 
 // ---------------------------------------------------------------------------
 // PostgreSQL Connection Pool
