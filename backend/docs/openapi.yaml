@@ -1,0 +1,1127 @@
+openapi: "3.0.3"
+info:
+  title: Bike Auction Platform API
+  description: |
+    RESTful API for the Bike Auction Platform.
+
+    ## Authentication
+    - **Register/Login** → Receive a short-lived JWT Access Token (15 min) in the response body
+      and a long-lived Refresh Token (7 days) as an `httpOnly`, `SameSite=Strict`, `Secure` cookie.
+    - **Authenticated requests** → Pass the Access Token in the `Authorization: Bearer <token>` header.
+    - **Token refresh** → `POST /api/auth/refresh` reads the cookie and returns a new Access Token.
+    - **Real-time bidding** → Uses WebSocket (Socket.io) with token passed in the connection handshake.
+      See the architecture document for WebSocket event contracts.
+
+    ## Monetary Values
+    All monetary fields are represented in **cents** (integer) to avoid floating-point precision issues.
+    Example: `$1,250.00` → `125000`.
+  version: "1.0.0"
+  contact:
+    name: Bike Auction Engineering
+    email: eng@bikeauction.dev
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.bikeauction.dev
+    description: Production
+
+# ============================================================================
+# Security Schemes
+# ============================================================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token (15 minutes). Obtain via POST /api/auth/login.
+
+  # ==========================================================================
+  # Reusable Schemas
+  # ==========================================================================
+  schemas:
+    # --- Error ---
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: "Email is required"
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    # --- Auth ---
+    RegisterRequest:
+      type: object
+      required: [email, username, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: rider@example.com
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+          example: speed_rider
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          example: "S3cur3P@ss!"
+        role:
+          type: string
+          enum: [buyer, seller]
+          default: buyer
+          description: "Admin role cannot be self-assigned."
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: rider@example.com
+        password:
+          type: string
+          format: password
+          example: "S3cur3P@ss!"
+
+    AuthResponse:
+      type: object
+      required: [accessToken, user]
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived JWT (15 min). Refresh token is set as httpOnly cookie.
+          example: eyJhbGciOiJIUzI1NiIs...
+        user:
+          $ref: "#/components/schemas/UserProfile"
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        role:
+          type: string
+          enum: [buyer, seller, admin]
+        isSellerVerified:
+          type: boolean
+        hasCardOnFile:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    # --- Motorcycle ---
+    MotorcycleCreate:
+      type: object
+      required: [title, make, model, year, mileageKm, condition]
+      properties:
+        title:
+          type: string
+          maxLength: 300
+          example: "2023 Ducati Panigale V4 S — Pristine Condition"
+        make:
+          type: string
+          maxLength: 100
+          example: Ducati
+        model:
+          type: string
+          maxLength: 100
+          example: Panigale V4 S
+        year:
+          type: integer
+          minimum: 1900
+          maximum: 2100
+          example: 2023
+        vin:
+          type: string
+          maxLength: 17
+          example: ZDM14BKW1PB000123
+        mileageKm:
+          type: integer
+          minimum: 0
+          example: 3200
+        engineCc:
+          type: integer
+          example: 1103
+        condition:
+          type: string
+          enum: [excellent, good, fair, poor, salvage]
+          example: excellent
+        description:
+          type: string
+          example: "One owner, full service history, never dropped."
+        photoUrls:
+          type: array
+          items:
+            type: string
+            format: uri
+          example:
+            - https://cdn.bikeauction.dev/photos/ducati-front.jpg
+            - https://cdn.bikeauction.dev/photos/ducati-side.jpg
+        thumbnailUrl:
+          type: string
+          format: uri
+
+    MotorcycleUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        make:
+          type: string
+        model:
+          type: string
+        year:
+          type: integer
+        vin:
+          type: string
+        mileageKm:
+          type: integer
+        engineCc:
+          type: integer
+        condition:
+          type: string
+          enum: [excellent, good, fair, poor, salvage]
+        description:
+          type: string
+        photoUrls:
+          type: array
+          items:
+            type: string
+            format: uri
+        thumbnailUrl:
+          type: string
+          format: uri
+
+    Motorcycle:
+      allOf:
+        - $ref: "#/components/schemas/MotorcycleCreate"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            sellerId:
+              type: string
+              format: uuid
+            listingStatus:
+              type: string
+              enum: [draft, pending_approval, approved, rejected]
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+
+    # --- Auction ---
+    AuctionCreate:
+      type: object
+      required: [motorcycleId, startingPriceCents, startsAt, endsAt]
+      properties:
+        motorcycleId:
+          type: string
+          format: uuid
+        startingPriceCents:
+          type: integer
+          minimum: 1
+          example: 1500000
+          description: "Starting price in cents. Example: $15,000.00 = 1500000"
+        reservePriceCents:
+          type: integer
+          nullable: true
+          example: 2000000
+          description: "Optional reserve price in cents. Null = no reserve."
+        bidIncrementCents:
+          type: integer
+          minimum: 1
+          default: 100
+          example: 500
+          description: "Minimum bid increment in cents. Default: $1.00"
+        startsAt:
+          type: string
+          format: date-time
+          example: "2026-08-01T14:00:00Z"
+        endsAt:
+          type: string
+          format: date-time
+          example: "2026-08-03T14:00:00Z"
+        softCloseWindowSeconds:
+          type: integer
+          default: 120
+          description: "Seconds before end during which bids trigger extension."
+        softCloseExtensionSeconds:
+          type: integer
+          default: 120
+          description: "Seconds to extend when a soft-close bid lands."
+
+    Auction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        motorcycleId:
+          type: string
+          format: uuid
+        sellerId:
+          type: string
+          format: uuid
+        startingPriceCents:
+          type: integer
+        reservePriceCents:
+          type: integer
+          nullable: true
+        bidIncrementCents:
+          type: integer
+        currentHighestBidCents:
+          type: integer
+          description: "Denormalized highest bid for fast reads."
+        currentHighestBidderId:
+          type: string
+          format: uuid
+          nullable: true
+        totalBids:
+          type: integer
+        startsAt:
+          type: string
+          format: date-time
+        originalEndTime:
+          type: string
+          format: date-time
+        currentEndTime:
+          type: string
+          format: date-time
+          description: "May differ from originalEndTime due to soft-close extensions."
+        softCloseWindowSeconds:
+          type: integer
+        softCloseExtensionSeconds:
+          type: integer
+        status:
+          type: string
+          enum: [scheduled, active, soft_close, ended, reserve_not_met, sold, cancelled]
+        version:
+          type: integer
+          description: "Optimistic concurrency version. Incremented on every bid."
+        motorcycle:
+          $ref: "#/components/schemas/Motorcycle"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    # --- Bid ---
+    Bid:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        auctionId:
+          type: string
+          format: uuid
+        bidderId:
+          type: string
+          format: uuid
+        bidderUsername:
+          type: string
+          description: "Populated via join for display."
+        amountCents:
+          type: integer
+        status:
+          type: string
+          enum: [valid, outbid, rejected, winning]
+        correlationId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    # --- Pagination ---
+    PaginationMeta:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        totalItems:
+          type: integer
+          example: 142
+        totalPages:
+          type: integer
+          example: 8
+
+  # ==========================================================================
+  # Reusable Parameters
+  # ==========================================================================
+  parameters:
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    QueryPage:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    QueryLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+# ============================================================================
+# Paths
+# ============================================================================
+paths:
+  # --------------------------------------------------------------------------
+  # Auth
+  # --------------------------------------------------------------------------
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created. Refresh token set as httpOnly cookie.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: refreshToken=abc123; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=604800
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Validation error (missing fields, weak password)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email or username already taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with email and password
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful. Refresh token set as httpOnly cookie.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: refreshToken=abc123; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=604800
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token using httpOnly cookie
+      operationId: refreshToken
+      description: |
+        Reads the `refreshToken` from the httpOnly cookie.
+        Returns a new access token and rotates the refresh token.
+      responses:
+        "200":
+          description: New access token issued. New refresh token cookie set.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+        "401":
+          description: Refresh token missing, expired, or revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout and revoke refresh token
+      operationId: logoutUser
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Logged out. Refresh token cookie cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logged out successfully
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # --------------------------------------------------------------------------
+  # Motorcycles
+  # --------------------------------------------------------------------------
+  /api/motorcycles:
+    get:
+      tags: [Motorcycles]
+      summary: List approved motorcycles (public browse)
+      operationId: listMotorcycles
+      parameters:
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+        - name: make
+          in: query
+          schema:
+            type: string
+          description: "Filter by manufacturer (e.g., Ducati, Harley-Davidson)"
+        - name: yearMin
+          in: query
+          schema:
+            type: integer
+        - name: yearMax
+          in: query
+          schema:
+            type: integer
+        - name: condition
+          in: query
+          schema:
+            type: string
+            enum: [excellent, good, fair, poor, salvage]
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [newest, oldest, year_asc, year_desc]
+            default: newest
+      responses:
+        "200":
+          description: Paginated list of approved motorcycles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Motorcycle"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+    post:
+      tags: [Motorcycles]
+      summary: Create a motorcycle listing (seller only)
+      operationId: createMotorcycle
+      security:
+        - BearerAuth: []
+      description: |
+        Requires `role: seller` and `isSellerVerified: true`.
+        Listing is created in `draft` status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MotorcycleCreate"
+      responses:
+        "201":
+          description: Motorcycle listing created in draft status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Motorcycle"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a verified seller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/motorcycles/{id}:
+    get:
+      tags: [Motorcycles]
+      summary: Get motorcycle details
+      operationId: getMotorcycle
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Motorcycle details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Motorcycle"
+        "404":
+          description: Motorcycle not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    put:
+      tags: [Motorcycles]
+      summary: Update motorcycle listing (owner only)
+      operationId: updateMotorcycle
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      description: |
+        Only the listing owner can update. Cannot update if listing
+        has an active auction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MotorcycleUpdate"
+      responses:
+        "200":
+          description: Updated motorcycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Motorcycle"
+        "403":
+          description: Not the listing owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Motorcycle not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Cannot update — motorcycle has an active auction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [Motorcycles]
+      summary: Delete motorcycle listing (owner only)
+      operationId: deleteMotorcycle
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Motorcycle deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Motorcycle listing deleted
+        "403":
+          description: Not the listing owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Cannot delete — motorcycle has an active auction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/motorcycles/{id}/submit:
+    post:
+      tags: [Motorcycles]
+      summary: Submit listing for approval (owner only)
+      operationId: submitMotorcycleForApproval
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      description: Transitions listing from `draft` → `pending_approval`.
+      responses:
+        "200":
+          description: Listing submitted for approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Motorcycle"
+        "400":
+          description: Listing not in draft status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not the listing owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # --------------------------------------------------------------------------
+  # Auctions
+  # --------------------------------------------------------------------------
+  /api/auctions:
+    get:
+      tags: [Auctions]
+      summary: List auctions (with filters)
+      operationId: listAuctions
+      parameters:
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [scheduled, active, soft_close, ended, reserve_not_met, sold, cancelled]
+          description: "Filter by auction status. Omit for all statuses."
+        - name: make
+          in: query
+          schema:
+            type: string
+          description: "Filter by motorcycle make."
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [ending_soon, newest, most_bids, price_asc, price_desc]
+            default: ending_soon
+      responses:
+        "200":
+          description: Paginated list of auctions with embedded motorcycle data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Auction"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+    post:
+      tags: [Auctions]
+      summary: Create an auction (verified seller only)
+      operationId: createAuction
+      security:
+        - BearerAuth: []
+      description: |
+        Requires `role: seller`, `isSellerVerified: true`, and the motorcycle
+        must be in `approved` listing status. Creates the auction in `scheduled` status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuctionCreate"
+      responses:
+        "201":
+          description: Auction created in scheduled status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Auction"
+        "400":
+          description: Validation error (dates in past, starting price invalid)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not a verified seller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Motorcycle not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Motorcycle already has an active/scheduled auction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auctions/{id}:
+    get:
+      tags: [Auctions]
+      summary: Get auction details (with motorcycle and current bid state)
+      operationId: getAuction
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Full auction details including embedded motorcycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Auction"
+        "404":
+          description: Auction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auctions/{id}/cancel:
+    post:
+      tags: [Auctions]
+      summary: Cancel an auction (seller or admin only)
+      operationId: cancelAuction
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      description: |
+        Can only cancel auctions in `scheduled` status.
+        Active auctions cannot be cancelled (admin override deferred to V2).
+      responses:
+        "200":
+          description: Auction cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Auction"
+        "400":
+          description: Auction is not in a cancellable state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Not the auction seller or admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auctions/{id}/bids:
+    get:
+      tags: [Auctions]
+      summary: Get bid history for an auction
+      operationId: getAuctionBids
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+      responses:
+        "200":
+          description: Paginated bid history (newest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Bid"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "404":
+          description: Auction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # --------------------------------------------------------------------------
+  # User — My Resources
+  # --------------------------------------------------------------------------
+  /api/users/me/bids:
+    get:
+      tags: [Users]
+      summary: Get my bid history across all auctions
+      operationId: getMyBids
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [valid, outbid, rejected, winning]
+      responses:
+        "200":
+          description: Paginated list of the current user's bids
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Bid"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+  /api/users/me/auctions:
+    get:
+      tags: [Users]
+      summary: Get my auctions (seller dashboard)
+      operationId: getMyAuctions
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [scheduled, active, soft_close, ended, reserve_not_met, sold, cancelled]
+      responses:
+        "200":
+          description: Paginated list of the seller's auctions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Auction"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+  /api/users/me/motorcycles:
+    get:
+      tags: [Users]
+      summary: Get my motorcycle listings (seller dashboard)
+      operationId: getMyMotorcycles
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+        - name: listingStatus
+          in: query
+          schema:
+            type: string
+            enum: [draft, pending_approval, approved, rejected]
+      responses:
+        "200":
+          description: Paginated list of the seller's motorcycle listings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Motorcycle"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+  /api/users/me/notifications:
+    get:
+      tags: [Users]
+      summary: Get my notifications
+      operationId: getMyNotifications
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/QueryPage"
+        - $ref: "#/components/parameters/QueryLimit"
+        - name: unreadOnly
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Paginated notifications list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        type:
+                          type: string
+                          enum: [outbid, auction_won, auction_ending, auction_cancelled]
+                        auctionId:
+                          type: string
+                          format: uuid
+                        payload:
+                          type: object
+                        isRead:
+                          type: boolean
+                        deliveredVia:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+  /api/users/me/notifications/{id}/read:
+    post:
+      tags: [Users]
+      summary: Mark a notification as read
+      operationId: markNotificationRead
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Notification marked as read
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Notification marked as read
+
+  # --------------------------------------------------------------------------
+  # Health
+  # --------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time

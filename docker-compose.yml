@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. PostgreSQL Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: bike_auction_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: bike_auction
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bike_auction"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # 2. Redis In-Memory Cache & Pub/Sub (with AOF persistence)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: bike_auction_redis
+    restart: always
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # 3. Node.js Backend Engine (HTTP + WebSockets)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bike_auction_backend
+    restart: always
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      LOG_LEVEL: debug
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: bike_auction
+      PG_USER: postgres
+      PG_PASSWORD: postgres_secure_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: super-secret-production-jwt-key
+      CORS_ORIGIN: "http://localhost:8080,http://localhost:5173"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 4. React Frontend (Production Nginx Build)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bike_auction_frontend
+    restart: always
+    ports:
+      - "8080:80"  # Port 8080 explicitly indicates production Nginx build (vs 5173 Vite dev server)
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+    driver: local
+  redis_data:
+    driver: local
