@@ -4,7 +4,7 @@ export default function App() {
   const [auctions, setAuctions] = useState<any[]>([]);
   
   // Grab the backend URL from Render's Environment Variables
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+  const API_URL = (import.meta as any).env.VITE_API_URL || 'http://localhost:3000';
 
   // 1. Fetch live auction data when the page loads (Example)
   useEffect(() => {
