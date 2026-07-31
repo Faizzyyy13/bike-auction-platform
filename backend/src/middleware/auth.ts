@@ -71,13 +71,13 @@ export function requireRole(...roles: string[]) {
 // ---------------------------------------------------------------------------
 export function signAccessToken(payload: AuthPayload): string {
   return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: process.env.JWT_ACCESS_EXPIRY || '15m',
+    expiresIn: (process.env.JWT_ACCESS_EXPIRY || '15m') as any,
   });
 }
 
 export function signRefreshToken(userId: string): string {
   return jwt.sign({ userId }, JWT_SECRET, {
-    expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d',
+    expiresIn: (process.env.JWT_REFRESH_EXPIRY || '7d') as any,
   });
 }
 
