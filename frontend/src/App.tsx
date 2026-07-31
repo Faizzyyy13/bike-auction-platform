@@ -2,6 +2,44 @@ import React, { useState, useEffect } from 'react';
 
 export default function App() {
   const [auctions, setAuctions] = useState<any[]>([]);
+  
+  // Grab the backend URL from Render's Environment Variables
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+  // 1. Fetch live auction data when the page loads (Example)
+  useEffect(() => {
+    const fetchAuctions = async () => {
+      try {
+        console.log(`Connecting to backend at: ${API_URL}`);
+        // Uncomment the lines below once you know your exact backend API route
+        // const response = await fetch(`${API_URL}/api/auctions`);
+        // const data = await response.json();
+        // setAuctions(data);
+      } catch (error) {
+        console.error("Failed to fetch auctions:", error);
+      }
+    };
+    fetchAuctions();
+  }, [API_URL]);
+
+  // 2. The function that runs when you click the button
+  const handlePlaceBid = async () => {
+    console.log(`Bid button clicked! Sending request to: ${API_URL}`);
+    
+    try {
+      // This is where you will send the POST request to your backend
+      // Example:
+      // await fetch(`${API_URL}/api/auctions/1/bid`, {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({ amount: 18600.00 })
+      // });
+      
+      alert(`Attempted to send a bid to ${API_URL}! Check your console.`);
+    } catch (error) {
+      console.error("Bid failed:", error);
+    }
+  };
 
   return (
     <div style={{ padding: '40px', maxWidth: '1200px', margin: '0 auto' }}>
@@ -26,7 +64,11 @@ export default function App() {
             <div style={{ color: '#94a3b8', fontSize: '12px', marginTop: '4px' }}>14 total bids • Soft-close active</div>
           </div>
 
-          <button style={{ width: '100%', background: 'linear-gradient(135deg, #0284c7, #4f46e5)', color: '#fff', border: 'none', padding: '14px', borderRadius: '10px', fontWeight: '700', fontSize: '16px', cursor: 'pointer' }}>
+          {/* ADDED THE onClick HANDLER HERE */}
+          <button 
+            onClick={handlePlaceBid} 
+            style={{ width: '100%', background: 'linear-gradient(135deg, #0284c7, #4f46e5)', color: '#fff', border: 'none', padding: '14px', borderRadius: '10px', fontWeight: '700', fontSize: '16px', cursor: 'pointer' }}
+          >
             Place Bid ($18,600.00)
           </button>
         </div>
