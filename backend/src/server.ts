@@ -35,7 +35,7 @@ async function main(): Promise<void> {
  app.get('/init-db', async (req, res) => {
       // Bypassing firewalls by using Render's Internal Network
       const client = new Client({
-          connectionString: "postgresql://faizal:CeTBtmLZ53zc8WAjiWVBUxvneuddYYsG@dpg-d9m3g4l6ub7c73ca14a0-a/bike_auction"
+          connectionString: "postgresql://faizal:CeTBtmLZ53zc8WAjiWVBUxvneuddYYsG@dpg-d9m3g4oae00c73bc2hr0-a/bike_auction_e4e7"
       });
 
       try {
